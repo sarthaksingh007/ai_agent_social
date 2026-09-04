@@ -1,0 +1,31 @@
+# --- Orchestration ---
+crewai==0.86.0
+crewai-tools==0.25.8
+
+# --- LLM (Groq free tier, via litellm which CrewAI uses under the hood) ---
+litellm==1.55.3
+groq==0.13.0
+
+# --- Schema contracts / validation ---
+pydantic==2.10.4
+
+# --- Competitor web search (free, no key) ---
+duckduckgo-search==6.4.2
+
+# --- Image generation post-processing (text overlay) ---
+Pillow==11.0.0
+requests==2.32.3
+
+# --- Database (PostgreSQL) ---
+SQLAlchemy==2.0.36
+psycopg2-binary==2.9.10
+
+# --- REST API behind the React control panel (replaces the Streamlit UI) ---
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# --- Config ---
+python-dotenv==1.0.1
+
+# --- CrewAI runtime dep (pkg_resources) not bundled in slim Python images ---
+setuptools==75.6.0

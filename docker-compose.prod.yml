@@ -1,0 +1,26 @@
+# Release overlay — adds the public Cloudflare tunnel in front of `web`.
+#
+# This file is NOT auto-loaded (that is what `docker-compose.override.yml` would
+# do). It has to be named explicitly, so a dev clone with no tunnel credentials
+# runs `docker compose up` and gets the whole stack minus the tunnel:
+#
+#   dev      docker compose up -d
+#   release  docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Requires cloudflared/credentials.json — see scripts/deploy.sh|ps1, which
+# checks for it before starting anything.
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: sma_cloudflared
+    restart: unless-stopped
+    depends_on:
+      - web
+    # NOTE: cloudflare/cloudflared is a distroless image — there is no /bin/sh,
+    # so an inline shell guard here fails with "stat /bin/sh: no such file or
+    # directory" and takes the tunnel down. The missing-credentials check lives
+    # in scripts/deploy.* instead, which runs before anything starts.
+    command: ["tunnel", "--no-autoupdate", "--config", "/etc/cloudflared/config.yml", "run"]
+    volumes:
+      - ./cloudflared/config.yml:/etc/cloudflared/config.yml:ro
+      - ./cloudflared/credentials.json:/etc/cloudflared/credentials.json:ro

@@ -1,0 +1,13 @@
+.env
+.git
+.gitignore
+__pycache__/
+*.pyc
+.venv/
+venv/
+web/
+cloudflared/
+generated_images/
+*.pdf
+.DS_Store
+README.md

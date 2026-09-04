@@ -1,0 +1,8 @@
+.env
+cloudflared/credentials.json
+__pycache__/
+*.pyc
+.venv/
+venv/
+generated_images/
+.DS_Store

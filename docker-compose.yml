@@ -1,0 +1,94 @@
+services:
+  # PostgreSQL 18 — stores posts and their approval status (replaces Airtable)
+  db:
+    image: postgres:18-alpine
+    container_name: sma_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sma}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sma_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-social_agency}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sma} -d ${POSTGRES_DB:-social_agency}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # The CrewAI multi-agent pipeline (agents added later — placeholder for now)
+  app:
+    build: .
+    container_name: sma_app
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-sma}:${POSTGRES_PASSWORD:-sma_pass}@db:5432/${POSTGRES_DB:-social_agency}
+    volumes:
+      - ./src:/app/src
+      - ./generated_images:/app/generated_images
+    command: ["python", "-m", "src.main"]
+
+  # Background queue worker — processes agent jobs one at a time.
+  worker:
+    build: .
+    container_name: sma_worker
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-sma}:${POSTGRES_PASSWORD:-sma_pass}@db:5432/${POSTGRES_DB:-social_agency}
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      - ./src:/app/src
+      - ./generated_images:/app/generated_images
+    command: ["python", "-m", "src.worker"]
+    # The worker is the only heavy service (CrewAI + Pillow); cap it so an agent
+    # run can't starve the rest of the machine.
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+
+  # REST API consumed by the React control panel. Only enqueues jobs and reads
+  # the DB — the agent stack never loads in this process.
+  api:
+    build: .
+    container_name: sma_api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg2://${POSTGRES_USER:-sma}:${POSTGRES_PASSWORD:-sma_pass}@db:5432/${POSTGRES_DB:-social_agency}
+      PYTHONPATH: /app
+      PYTHONUNBUFFERED: "1"
+    ports:
+      - "8000:8000"          # published so `npm run dev` can proxy to it
+    volumes:
+      - ./src:/app/src
+      - ./generated_images:/app/generated_images
+    command: ["uvicorn", "src.api:app", "--host", "0.0.0.0", "--port", "8000"]
+
+  # React control panel (Vite build served by nginx, which also proxies /api).
+  web:
+    build: ./web
+    container_name: sma_web
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "8095:80"          # 8080/8090 are taken by the unrelated paedia stack
+
+volumes:
+  pgdata:
