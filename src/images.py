@@ -23,18 +23,20 @@ from PIL import Image, ImageDraw, ImageFont
 
 IMAGE_DIR = os.getenv("IMAGE_DIR", "/app/generated_images")
 
-# Provider: "openai" (gpt-image-1, best quality, uses OPENAI_API_KEY),
-# "cloudflare" (FLUX.2 on Workers AI — free tier, good text rendering) or
-# "pollinations" (free, but their anonymous API is unreliable lately).
+# Provider: "cloudflare" (FLUX.2 on Workers AI — free tier, good text
+# rendering) or "pollinations" (free, but their anonymous API is unreliable
+# lately).
 IMAGE_PROVIDER = os.getenv(
     "IMAGE_PROVIDER",
-    "openai" if os.getenv("OPENAI_API_KEY") else "pollinations",
+    "cloudflare" if os.getenv("CLOUDFLARE_API_TOKEN") else "pollinations",
 )
-OPENAI_IMAGE_MODEL = os.getenv("OPENAI_IMAGE_MODEL", "gpt-image-1")
-OPENAI_IMAGE_QUALITY = os.getenv("OPENAI_IMAGE_QUALITY", "medium")
 
 # Cloudflare Workers AI (free tier). Needs CLOUDFLARE_ACCOUNT_ID + a Workers-AI
 # API token. FLUX.2 Klein renders text well enough to design the full poster.
+#
+# CLOUDFLARE_IMAGE_MODEL also accepts partner models on the newer unified
+# /ai/run endpoint (no "@cf/" prefix), e.g. "google/nano-banana-2-lite" —
+# those are PAID (AI Gateway balance or BYOK), not covered by free neurons.
 CLOUDFLARE_ACCOUNT_ID = os.getenv("CLOUDFLARE_ACCOUNT_ID", "")
 CLOUDFLARE_API_TOKEN = os.getenv("CLOUDFLARE_API_TOKEN", "")
 CLOUDFLARE_IMAGE_MODEL = os.getenv(
@@ -64,24 +66,23 @@ POSTER_TEMPLATE = """Create a premium Instagram promotional poster (portrait 4:5
 
 Hero subject / scene: {scene}
 
-Text to render EXACTLY as written (and no other words, watermarks or invented logos):
+Text to render EXACTLY as written, spelling every word letter-perfectly (and no other words, watermarks or invented logos):
 - Large headline at the top: "{headline}"
 {extra_text_lines}
 Style:
-- Minimalist luxury aesthetic
-- Bold typography with strong visual hierarchy
+- Minimalist luxury aesthetic, trending Instagram editorial look
+- Bold modern display typography with strong visual hierarchy
 - Plenty of negative space
 - Professional social media advertisement
-- Vibrant yet elegant color palette
-- Soft lighting and realistic shadows
-- High-end commercial photography look
+- Vibrant yet elegant color palette with smooth premium gradients
+- Soft studio lighting and realistic shadows
+- High-end commercial photography look, cinematic color grading
 
 Layout:
 - Eye-catching hero subject occupying 50-60% of the canvas
 - Large headline at the top
 - Supporting text beneath the headline
 - Strong call-to-action element near the bottom
-- Clear empty space reserved in the top-left corner for a logo
 - Social media handle at the bottom
 - CRITICAL LAYOUT RULE: the top 12% and bottom 12% of the canvas must contain ONLY background imagery — every text element, the logo, and the CTA button must sit inside the central 76% of the frame (the image will be cropped to 4:5, so anything near the top or bottom edge is lost)
 
@@ -94,13 +95,17 @@ Design details:
 Quality: Ultra HD, photorealistic, award-winning advertising design, premium brand identity, perfect alignment, magazine-quality composition, professionally designed Instagram advertisement."""
 
 
-# Composition hints that make multi-variant posters genuinely different.
+# Art-direction hints that make multi-variant posters genuinely different —
+# each variant gets a distinct trending Instagram aesthetic, not just a
+# different camera angle.
 VARIANT_HINTS = [
     "",
-    " Alternative composition for this variant: dramatic close-up macro of "
-    "the hero subject filling the frame.",
-    " Alternative composition for this variant: elegant top-down flat-lay "
-    "arrangement on a styled surface.",
+    " Art direction for this variant: bold editorial magazine cover look — "
+    "oversized display typography, dramatic close-up macro of the hero "
+    "subject filling the frame, high-contrast lighting.",
+    " Art direction for this variant: vibrant gradient backdrop (smooth "
+    "duotone color wash), elegant top-down flat-lay arrangement, playful "
+    "modern layout with floating 3D elements and soft shadows.",
 ]
 
 
@@ -227,31 +232,6 @@ def _overlay_hook(img: Image.Image, text: str) -> Image.Image:
     return img
 
 
-def _openai_generate(prompt: str) -> Image.Image | None:
-    """Generate via OpenAI gpt-image-1 (portrait 1024x1536). Returns None on
-    failure so the caller can fall back."""
-    try:
-        resp = requests.post(
-            "https://api.openai.com/v1/images/generations",
-            headers={"Authorization": f"Bearer {os.getenv('OPENAI_API_KEY', '')}"},
-            json={
-                "model": OPENAI_IMAGE_MODEL,
-                "prompt": prompt,
-                "size": "1024x1536",
-                "quality": OPENAI_IMAGE_QUALITY,
-            },
-            timeout=300,
-        )
-        if resp.status_code != 200:
-            print(f"[images] openai {resp.status_code}: {resp.text[:200]}")
-            return None
-        b64 = resp.json()["data"][0]["b64_json"]
-        return Image.open(BytesIO(base64.b64decode(b64)))
-    except Exception as exc:  # noqa: BLE001
-        print(f"[images] openai failed: {exc}")
-        return None
-
-
 def _cloudflare_generate(prompt: str) -> Image.Image | None:
     """Generate via Cloudflare Workers AI (FLUX.2 Klein). Free tier. Returns
     None on failure so the caller can fall back.
@@ -262,6 +242,9 @@ def _cloudflare_generate(prompt: str) -> Image.Image | None:
     if not (CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN):
         print("[images] cloudflare: CLOUDFLARE_ACCOUNT_ID / _API_TOKEN not set")
         return None
+
+    if not CLOUDFLARE_IMAGE_MODEL.startswith("@cf/"):
+        return _cloudflare_ai_generate(prompt)
 
     url = (f"https://api.cloudflare.com/client/v4/accounts/"
            f"{CLOUDFLARE_ACCOUNT_ID}/ai/run/{CLOUDFLARE_IMAGE_MODEL}")
@@ -297,6 +280,44 @@ def _cloudflare_generate(prompt: str) -> Image.Image | None:
             print(f"[images] cloudflare attempt {attempt + 1} failed: {exc}")
             time.sleep(5)
     return None
+
+
+def _cloudflare_ai_generate(prompt: str) -> Image.Image | None:
+    """Generate via Cloudflare's unified /ai/run endpoint (partner models such
+    as google/nano-banana-2-lite). These are PAID — they need an AI Gateway
+    balance or a BYOK key; a 402 means no balance. Returns None on failure so
+    the caller can fall back to the free FLUX tier."""
+    url = (f"https://api.cloudflare.com/client/v4/accounts/"
+           f"{CLOUDFLARE_ACCOUNT_ID}/ai/run")
+    headers = {"Authorization": f"Bearer {CLOUDFLARE_API_TOKEN}"}
+    body = {
+        "model": CLOUDFLARE_IMAGE_MODEL,
+        "input": {
+            "prompt": prompt,
+            "aspect_ratio": "4:5",  # Instagram portrait, no crop needed
+            "output_format": "png",
+        },
+    }
+    try:
+        resp = requests.post(url, headers=headers, json=body, timeout=300)
+        if resp.status_code != 200:
+            print(f"[images] cloudflare-ai {resp.status_code}: {resp.text[:200]}")
+            return None
+        ctype = resp.headers.get("content-type", "")
+        if "application/json" not in ctype:
+            return Image.open(BytesIO(resp.content))
+        result = resp.json().get("result") or {}
+        # The unified endpoint returns base64 under result.image (or a list).
+        b64 = result.get("image") or next(iter(result.get("images") or []), None)
+        if not b64:
+            print(f"[images] cloudflare-ai: no image in {str(result)[:200]}")
+            return None
+        if b64.startswith("data:"):  # data URI form
+            b64 = b64.split(",", 1)[1]
+        return Image.open(BytesIO(base64.b64decode(b64)))
+    except Exception as exc:  # noqa: BLE001
+        print(f"[images] cloudflare-ai failed: {exc}")
+        return None
 
 
 def _pollinations_generate(prompt: str, width: int, height: int):
@@ -343,25 +364,19 @@ def generate_image(prompt: str, post_id: str, hook_text: str | None = None,
     img = None
     ai_rendered_text = False
 
-    if IMAGE_PROVIDER == "openai":
+    if IMAGE_PROVIDER == "cloudflare":
         if hook_text:
-            # gpt-image-1 renders text well — have it DESIGN the full ad
-            # poster (headline, subtext, CTA, brand kit) using the template.
-            img = _openai_generate(
+            # FLUX.2 Klein (and nano-banana) render text well — have the AI
+            # DESIGN the full ad poster (headline, subtext, CTA, brand kit)
+            # exactly like the OpenAI path, instead of a plain photo with a
+            # basic Pillow text band.
+            img = _cloudflare_generate(
                 build_poster_prompt(f"{prompt}, {STYLE_SUFFIX}", hook_text,
                                     subtext=subtext, cta=cta, handle=handle,
                                     brand=brand, variant_hint=variant_hint))
             ai_rendered_text = img is not None
         else:
-            img = _openai_generate(f"{prompt}, {STYLE_SUFFIX}")
-
-    elif IMAGE_PROVIDER == "cloudflare":
-        # FLUX.2 makes gorgeous visuals but GARBLES rendered text — so we
-        # generate a clean, text-free image and let the Pillow overlay add the
-        # (guaranteed-legible) hook. variant_hint keeps multi-variant posters
-        # visually distinct.
-        img = _cloudflare_generate(f"{prompt}{variant_hint}, {STYLE_SUFFIX}")
-        # ai_rendered_text stays False -> _overlay_hook runs below.
+            img = _cloudflare_generate(f"{prompt}{variant_hint}, {STYLE_SUFFIX}")
 
     if img is None:  # pollinations path, or the chosen provider failed
         img = _pollinations_generate(f"{prompt}, {STYLE_SUFFIX}", width, height)
